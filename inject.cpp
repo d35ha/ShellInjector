@@ -1,10 +1,7 @@
 
 /*
     build with gcc:
-        $ g++ inject.cpp -o inject.exe
-    build with msvc:
-        $ vcvars32
-        $ cl inject.cpp
+        $ g++ inject.cpp -o inject.exe -lntdll
 */
 
 /*
@@ -16,7 +13,10 @@
 */
 
 #include <windows.h>
+#include <winternl.h>
 #include <stdio.h>
+
+#pragma comment (lib ,"ntdll.lib")
 
 static enum {
     x32,
@@ -125,49 +125,64 @@ int main(int argc, char** argv) {
             return 0;
         };
 
-        HMODULE hKernel32 = NULL;
-        if (!(hKernel32 = GetModuleHandle("kernel32")))
-        {
-            printf("Error at GetModuleHandle, code = %d\n", GetLastError());
-            return 0;
-        };
+		ULONG ulWrittenSize = 0;
+		LPVOID lpIsWow64 = NULL;
+		NTSTATUS ntProcessStatus = 0;
+		if ((ntProcessStatus = NtQueryInformationProcess(
+			hProcess,
+			ProcessWow64Information,
+			&lpIsWow64,
+			sizeof(lpIsWow64),
+			&ulWrittenSize
+		)) || ulWrittenSize != sizeof(lpIsWow64))
+		{
+			printf("Error at NtQueryInformationProcess, code = %d\n", GetLastError());
+			return 0;
+		};
 
-        pArch = x32;
-        LPVOID fnIsWow64Process = NULL;
-        if ((fnIsWow64Process = (LPVOID)GetProcAddress(hKernel32, "IsWow64Process")))
-        {
-            BOOL IsWow64 = TRUE;
-            BOOL IsWin64 = FALSE;
-            CHAR WoW64Dir[MAX_PATH] = {0};
+#if defined(_M_X64) || defined(__amd64__)
+		if (lpIsWow64) pArch = x32;
+		else pArch = x64;
+#else
+		HMODULE hKernel32 = NULL;
+		if (!(hKernel32 = GetModuleHandleA("kernel32")))
+		{
+			printf("Error at GetModuleHandleA, code = %d\n", GetLastError());
+			return 0;
+		};
 
-            if (!((*(BOOL(*)(HANDLE, PBOOL)) fnIsWow64Process)(
-                hProcess,
-                &IsWow64
-                )))
-            {
-                printf("Error at IsWow64Process, code = %d\n", GetLastError());
-                return 0;
-            };
-
-            if (GetSystemWow64DirectoryA(WoW64Dir, sizeof(WoW64Dir))){
-                IsWin64 = TRUE;
-            } 
-            else if (GetLastError() != ERROR_CALL_NOT_IMPLEMENTED)
-            {
-                printf("Error at GetSystemWow64DirectoryA, code = %d\n", GetLastError());
-                return 0;
-            };
-
-            if (!IsWow64 && IsWin64)
-            {
-                pArch = x64;
-            };
-        }
-        else
-        {
-            printf("Error at GetProcAddress, code = %d\n", GetLastError());
-            return 0;
-        };
+		LPVOID fnGetSystemWow64DirectoryA = NULL;
+		if ((fnGetSystemWow64DirectoryA = (LPVOID)GetProcAddress(hKernel32, "GetSystemWow64DirectoryA")))
+		{
+			CHAR WoW64Dir[1] = { 0 };
+			if ((*(UINT(*)(LPSTR, UINT)) fnGetSystemWow64DirectoryA)(
+				WoW64Dir,
+				sizeof(WoW64Dir)
+				))
+			{
+				if (lpIsWow64)pArch = x32;
+				else pArch = x64;
+			}
+			else if (GetLastError() == ERROR_CALL_NOT_IMPLEMENTED)
+			{
+				pArch = x32;
+			}
+			else
+			{
+				printf("Error at GetSystemWow64DirectoryA, code = %d\n", GetLastError());
+				return 0;
+			};
+		}
+		else if (GetLastError() == ERROR_PROC_NOT_FOUND)
+		{
+			pArch = x32;
+		}
+		else
+		{
+			printf("Error at GetProcAdress, code = %d\n", GetLastError());
+			return 0;
+		};
+#endif
 
         LPVOID bAddress = NULL;
         DWORD dwShellCodeSize = 0;
